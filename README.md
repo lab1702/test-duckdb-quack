@@ -51,7 +51,18 @@ returned the same rows, and plots the results.
    query's own thread works too), three repeats each, after one unrecorded
    warm-up pass.
 
-3. Summarise:
+   To vary one factor while holding the other fixed, list the exact N x THREADS
+   pairs in `COMBOS` instead, each to its own output folder:
+
+   ```bash
+   COMBOS="1x24 2x24 4x24 8x24 16x24 22x24" OUT_DIR=out_threads24 ./run_tpch.sh
+   ```
+
+   ```bash
+   COMBOS="4x1 4x2 4x3 4x4 4x6 4x8 4x12 4x16 4x20 4x24" OUT_DIR=out_jobs4 ./run_tpch.sh
+   ```
+
+3. Summarise (the argument is the output folder; default `out`):
 
    ```bash
    Rscript summarize_tpch.R
@@ -67,6 +78,7 @@ returned the same rows, and plots the results.
 | `MARGIN` | `0` | Accept N + THREADS - 1 within this many of `CPUS`. |
 | `MAX_JOBS` | min(22, CPUs) | Largest N. |
 | `MAX_THREADS` | `CPUS` | Largest THREADS. |
+| `COMBOS` | unset | Exact `NxT` pairs to run (space-separated, N at most 22), in the order given. Replaces the four settings above, which are then ignored, and does not keep the CPU budget. |
 | `REPEATS` | `3` | Passes over all combinations (even passes run in reverse order). |
 | `OUT_DIR` | `out` | Output folder; should be a folder of its own. |
 | `WARMUP` | `1` | `0` skips the warm-up pass. |

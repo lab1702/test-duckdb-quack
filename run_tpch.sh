@@ -18,6 +18,13 @@
 #   CPUs defaults to `nproc`; override with CPUS, MAX_JOBS / MAX_THREADS, MARGIN
 #   (each at most 9999). Raising MARGIN (or MAX_JOBS, when it is below 22)
 #   brings skipped THREADS values into range.
+#   Or set COMBOS to the exact combinations to run, as space-separated NxT
+#   pairs (e.g. COMBOS="1x24 2x24 4x24 8x24 16x24 22x24" holds THREADS at 24
+#   and varies N; COMBOS="4x1 4x2 4x4 4x8 4x16 4x24" holds N at 4). N is 1..22
+#   and THREADS 1..9999, no pair twice; they run in the order given. With
+#   COMBOS set, CPUS, MARGIN, MAX_JOBS and MAX_THREADS are ignored (with a
+#   warning if any of them is set), and the CPU budget is not kept: e.g. 22x24
+#   runs ~45 threads on a 24-CPU machine.
 #   Every combination runs REPEATS times (default 3), one full pass over all
 #   combinations per repeat, in reverse order on even repeats so that drift
 #   over the sweep (cache state, heat, turbo) doesn't line up with THREADS.
@@ -91,7 +98,7 @@ command -v pgrep > /dev/null || { echo "pgrep (procps) is required" >&2; exit 1;
 command -v timeout > /dev/null || { echo "timeout (coreutils) is required" >&2; exit 1; }
 
 usage() {
-    echo "Usage: $0   (no arguments; set CPUS, MAX_JOBS, MAX_THREADS, MARGIN, REPEATS," >&2
+    echo "Usage: $0   (no arguments; set CPUS, MAX_JOBS, MAX_THREADS, MARGIN or COMBOS, and REPEATS," >&2
     echo "       OUT_DIR, WARMUP, QUERY_ORDER or QUERY_TIMEOUT in the environment; see the header)" >&2
     exit 2
 }
@@ -454,7 +461,10 @@ write_system_info() {
         csv_row logical_cpus "$(getconf _NPROCESSORS_ONLN 2> /dev/null)"
         csv_row memory_gib "$mem"
         csv_row duckdb "$version"
-        # The sweep's settings, so the output says what budget it covered.
+        # The sweep's settings, so the output says what budget it covered
+        # (or, with COMBOS, which combinations were asked for; the budget
+        # settings are then empty).
+        csv_row combos "$COMBOS"
         csv_row cpus "$cpus"
         csv_row margin "$margin"
         csv_row max_jobs "$max_jobs"
@@ -530,42 +540,68 @@ check_results() {
     (( ${#misordered[@]} + ${#differ[@]} == 0 ))
 }
 
-cpus="${CPUS:-$(nproc)}"
-# Before the defaults below do arithmetic with it.
-is_pos_int "$cpus" || bad CPUS "$cpus" "$POS_INT"
-max_jobs="${MAX_JOBS:-$(( cpus < 22 ? cpus : 22 ))}"
-max_threads="${MAX_THREADS:-$cpus}"
-margin="${MARGIN:-0}"
 repeats="${REPEATS:-3}"
-is_pos_int "$max_jobs" || bad MAX_JOBS "$max_jobs" "$POS_INT"
-is_pos_int "$max_threads" || bad MAX_THREADS "$max_threads" "$POS_INT"
 is_pos_int "$repeats" || bad REPEATS "$repeats" "$POS_INT"
-[[ "$margin" =~ ^(0|[1-9][0-9]{0,3})$ ]] || bad MARGIN "$margin" "a whole number from 0 to 9999 (no leading zeros)"
-(( max_jobs > 22 )) && max_jobs=22
-
-# "threads jobs" pairs with jobs + threads - 1 within margin of cpus,
-# threads-major. When even 22 jobs (all the queries) can't get within margin,
-# use 22 as the closest. A MAX_JOBS below 22 doesn't get that fallback: it
-# would bring in runs far below the CPU budget.
+COMBOS="${COMBOS:-}"
+# combos holds "threads jobs" pairs, in the order they run within a repeat.
 combos=()
-skipped=()
 fallback=0
-for threads in $(seq 1 "$max_threads"); do
-    if (( max_jobs == 22 && max_jobs + threads - 1 < cpus - margin )); then
-        combos+=("$threads $max_jobs")
-        fallback=1
-        continue
-    fi
-    found=0
-    for jobs in $(seq 1 "$max_jobs"); do
-        total=$(( jobs + threads - 1 ))
-        (( total >= cpus - margin && total <= cpus + margin )) && combos+=("$threads $jobs") && found=1
+if [ -n "$COMBOS" ]; then
+    # Explicit combinations; the budget settings don't apply.
+    cpus="" max_jobs="" max_threads="" margin=""
+    for v in CPUS MAX_JOBS MAX_THREADS MARGIN; do
+        [ -z "${!v:-}" ] || echo "Warning: $v is ignored when COMBOS is set" >&2
     done
-    (( found )) || skipped+=("$threads")
-done
-(( ${#combos[@]} > 0 )) || { echo "No combinations with jobs + threads - 1 within $margin of $cpus" >&2; die 2; }
-(( ${#skipped[@]} == 0 )) ||
-    echo "Skipping threads ${skipped[*]}: no jobs value gives jobs + threads - 1 within $margin of $cpus (raise MARGIN, or MAX_JOBS if it is below 22, to include them)" >&2
+    # Split on IFS only, as for QUERY_ORDER.
+    read -r -d '' -a pairs <<< "$COMBOS"
+    for pair in "${pairs[@]}"; do
+        [[ "$pair" =~ ^([1-9][0-9]{0,3})x([1-9][0-9]{0,3})$ ]] ||
+            bad COMBOS "$pair" "space-separated NxT pairs like 4x21 (N and THREADS whole numbers, no leading zeros)"
+        jobs=${BASH_REMATCH[1]}
+        threads=${BASH_REMATCH[2]}
+        (( jobs <= 22 )) || bad COMBOS "$pair" "pairs with N at most 22 (there are only 22 queries)"
+        for combo in "${combos[@]}"; do
+            [ "$combo" = "$threads $jobs" ] && { echo "COMBOS lists $pair more than once" >&2; usage; }
+        done
+        combos+=("$threads $jobs")
+    done
+    (( ${#combos[@]} > 0 )) || bad COMBOS "$COMBOS" "at least one NxT pair"
+    sweep_desc="Running the combinations $COMBOS"
+else
+    cpus="${CPUS:-$(nproc)}"
+    # Before the defaults below do arithmetic with it.
+    is_pos_int "$cpus" || bad CPUS "$cpus" "$POS_INT"
+    max_jobs="${MAX_JOBS:-$(( cpus < 22 ? cpus : 22 ))}"
+    max_threads="${MAX_THREADS:-$cpus}"
+    margin="${MARGIN:-0}"
+    is_pos_int "$max_jobs" || bad MAX_JOBS "$max_jobs" "$POS_INT"
+    is_pos_int "$max_threads" || bad MAX_THREADS "$max_threads" "$POS_INT"
+    [[ "$margin" =~ ^(0|[1-9][0-9]{0,3})$ ]] || bad MARGIN "$margin" "a whole number from 0 to 9999 (no leading zeros)"
+    (( max_jobs > 22 )) && max_jobs=22
+
+    # "threads jobs" pairs with jobs + threads - 1 within margin of cpus,
+    # threads-major. When even 22 jobs (all the queries) can't get within margin,
+    # use 22 as the closest. A MAX_JOBS below 22 doesn't get that fallback: it
+    # would bring in runs far below the CPU budget.
+    skipped=()
+    for threads in $(seq 1 "$max_threads"); do
+        if (( max_jobs == 22 && max_jobs + threads - 1 < cpus - margin )); then
+            combos+=("$threads $max_jobs")
+            fallback=1
+            continue
+        fi
+        found=0
+        for jobs in $(seq 1 "$max_jobs"); do
+            total=$(( jobs + threads - 1 ))
+            (( total >= cpus - margin && total <= cpus + margin )) && combos+=("$threads $jobs") && found=1
+        done
+        (( found )) || skipped+=("$threads")
+    done
+    (( ${#combos[@]} > 0 )) || { echo "No combinations with jobs + threads - 1 within $margin of $cpus" >&2; die 2; }
+    (( ${#skipped[@]} == 0 )) ||
+        echo "Skipping threads ${skipped[*]}: no jobs value gives jobs + threads - 1 within $margin of $cpus (raise MARGIN, or MAX_JOBS if it is below 22, to include them)" >&2
+    sweep_desc="Sweeping jobs 1..$max_jobs x threads 1..$max_threads where jobs + threads - 1 is $cpus +/- $margin $( (( fallback )) && echo "(or jobs = 22 where even that is below the budget) ")"
+fi
 # The largest N in the sweep, for the warm-up.
 warm_jobs=1
 for combo in "${combos[@]}"; do
@@ -613,8 +649,7 @@ QUERIES_CSV="$OUT_DIR/queries.csv"
     echo "jobs,threads,rep,query,exit,start_s,seconds,query_s" > "$QUERIES_CSV"; } ||
     { echo "Failed to write to $OUT_DIR" >&2; die 1; }
 
-echo "Sweeping jobs 1..$max_jobs x threads 1..$max_threads where jobs + threads - 1 is $cpus +/- $margin" \
-    "$( (( fallback )) && echo "(or jobs = 22 where even that is below the budget) ")(${#combos[@]} combinations x $repeats repeats)"
+echo "$sweep_desc (${#combos[@]} combinations x $repeats repeats)"
 total_failed=0
 current_threads=""
 for rep in $(seq 1 "$repeats"); do

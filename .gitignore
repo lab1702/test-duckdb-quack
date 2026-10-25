@@ -1,5 +1,5 @@
-# Sweep output from run_tpch.sh (OUT_DIR, default ./out) and what summarize_tpch.R writes into it
-out/
+# Sweep output from run_tpch.sh (OUT_DIR, default ./out; out_* for COMBOS sweeps) and what summarize_tpch.R writes into it
+out*/
 *.csv
 *.png
 *.pdf
