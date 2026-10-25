@@ -11,6 +11,7 @@ returned the same rows, and plots the results.
 | `start_server.sh` | Starts a read-only quack server on a TPC-H database file. |
 | `run_tpch.sh` | Runs the sweep and writes timings and a result check as CSV. |
 | `summarize_tpch.R` | Prints summary tables and writes `summary.png` / `summary.pdf`. |
+| `social_card.R` | Renders `social_card.png`, a 1200 x 1200 summary card of the findings in `RESULTS.md` (numbers typed in, not read from a sweep). |
 
 ## Requirements
 
@@ -21,7 +22,8 @@ returned the same rows, and plots the results.
 - bash 5.1 or newer, plus `setsid`, `pgrep`, `timeout`, `lscpu`, `md5sum`,
   `awk` and `sed -i` (Linux; util-linux, procps and coreutils or uutils).
 - For the plots: R 4.1 or newer with the `dplyr`, `tidyr`, `ggplot2` and
-  `patchwork` packages.
+  `patchwork` packages. `social_card.R` also needs `ragg` and `systemfonts`,
+  and uses the Inter font when it is installed.
 
 ## Usage
 
