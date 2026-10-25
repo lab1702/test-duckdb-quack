@@ -1,0 +1,14 @@
+# Sweep output from run_tpch.sh (OUT_DIR, default ./out) and what summarize_tpch.R writes into it
+out/
+*.csv
+*.png
+*.pdf
+j[0-9][0-9]_t[0-9][0-9]*/
+*.err
+*.log
+# DuckDB database files
+*.duckdb
+*.duckdb.wal
+# R
+.Rhistory
+.RData
