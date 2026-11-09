@@ -3,7 +3,9 @@
 # Usage: Rscript social_card.R [OUTPUT.png]   (default: social_card.png)
 # The numbers are typed in below, not read from a sweep: they are the medians
 # summarize_tpch.R reported for the two one-factor sweeps in RESULTS.md
-# ("Separating concurrency from server threads"), so re-running a sweep does
+# ("Separating concurrency from server threads") and the Q02 medians
+# summarize_mixed.R reported for the admission-control test ("Admission
+# control: light queries mixed into a heavy load"), so re-running a sweep does
 # not change the card until the tables here are updated.
 # Needs ggplot2, patchwork and ragg, and the Inter font (falls back to the
 # default sans font if Inter is not installed).
@@ -73,34 +75,65 @@ p_c <- ggplot(thr, aes(x, time)) +
   scale_fill_identity() +
   geom_text(aes(label = sprintf("%.0f", time), y = time + 1.2), family = fam, colour = ink, size = 3.4, vjust = 0) +
   scale_y_continuous(limits = c(0, 50), expand = expansion(0), breaks = seq(0, 50, 10)) +
-  labs(title = "Total time for all 22 queries vs server threads",
-       subtitle = "4 queries in flight throughout · 3.1x faster from 1 to 24 threads, knee at 12–16",
+  labs(title = "Total time vs server threads",
+       subtitle = "4 queries in flight throughout · 3.1x faster from\n1 to 24 threads, knee at 12–16",
        x = "server threads (SET threads)", y = "seconds") +
   base()
 
+# ---- Panel D: admission control, an 80 ms query mixed into a heavy load ------
+# Q02 medians: queue wait and execution next to 16 heavy clients running back
+# to back, with a gate capping queries in flight. The shared-queue bar (27 s,
+# almost all queue wait) is clipped to the axis and labelled.
+gate <- data.frame(
+  x = c("alone", "no gate", "shared\nqueue\ncap 2", "bypass\ncap 8", "bypass\ncap 4", "bypass\ncap 2", "bypass\ncap 1"),
+  wait = c(0, 0, 26.78, 0, 0, 0, 0),
+  exec = c(0.10, 2.01, 0.23, 1.63, 1.17, 0.80, 0.35),
+  label = c("0.10 s", "2.0 s", "27 s", "1.6 s", "1.2 s", "0.8 s", "0.35 s"))
+gate$x <- factor(gate$x, levels = gate$x)
+gate_top <- 3.0
+gate$wait_shown <- pmin(gate$wait, gate_top - gate$exec)
+gate_long <- rbind(data.frame(x = gate$x, part = "queue wait", s = gate$wait_shown),
+                   data.frame(x = gate$x, part = "execution", s = gate$exec))
+gate_long$part <- factor(gate_long$part, levels = c("queue wait", "execution"))
+
+p_d <- ggplot(gate_long, aes(x, s)) +
+  geom_col(aes(fill = part), width = 0.66) +
+  scale_fill_manual(values = c(`queue wait` = blue_light, execution = blue), name = NULL) +
+  geom_text(aes(x, pmin(wait + exec, gate_top) + 0.08, label = label), data = gate, family = fam,
+            colour = ink, size = 3.4, vjust = 0) +
+  scale_y_continuous(limits = c(0, gate_top + 0.45), expand = expansion(0), breaks = 0:3) +
+  labs(title = "An 80 ms query under admission control",
+       subtitle = "Q02 arriving every 0.5 s into 16 heavy clients · 24 threads\nbar = median queue wait + median execution\nshared: cap on all queries · bypass: cap on heavy ones only",
+       x = NULL, y = "seconds") +
+  base() +
+  theme(legend.position = c(0.84, 0.86), legend.text = element_text(colour = ink2, size = 9),
+        legend.key.size = unit(0.8, "lines"), legend.background = element_rect(fill = surface, colour = NA),
+        axis.text.x = element_text(size = 9, lineheight = 0.9))
+
 # ---- Hero tiles --------------------------------------------------------------
 tiles <- data.frame(
-  x = c(1, 2, 3),
-  big = c("15% faster", "11x latency", "3.1x faster"),
+  x = c(1, 2, 3, 4),
+  big = c("15% faster", "11x latency", "3.1x faster", "0.8 s"),
   small = c("with 2 queries in flight\ninstead of one at a time",
             "with 8 in flight, for the\nsame total time as one",
-            "from 1 to 24 server threads,\n4 queries in flight"))
+            "from 1 to 24 server threads,\n4 queries in flight",
+            "for an 80 ms query with a cap\nof just 2 heavy queries"))
 p_tiles <- ggplot(tiles) +
-  geom_text(aes(x, 1, label = big), family = fam, fontface = "bold", colour = blue_dark, size = 10.5, vjust = 0) +
-  geom_text(aes(x, 0.78, label = small), family = fam, colour = ink2, size = 3.7, lineheight = 0.95, vjust = 1) +
-  scale_x_continuous(limits = c(0.5, 3.5), expand = expansion(0)) +
+  geom_text(aes(x, 1, label = big), family = fam, fontface = "bold", colour = blue_dark, size = 9, vjust = 0) +
+  geom_text(aes(x, 0.78, label = small), family = fam, colour = ink2, size = 3.4, lineheight = 0.95, vjust = 1) +
+  scale_x_continuous(limits = c(0.5, 4.5), expand = expansion(0)) +
   scale_y_continuous(limits = c(0.2, 1.5), expand = expansion(0)) +
   theme_void() + theme(plot.background = element_rect(fill = surface, colour = NA),
                        plot.margin = margin(0, 10, 0, 10))
 
 # ---- Assemble ----------------------------------------------------------------
-card <- p_tiles / (p_a | p_b) / p_c +
-  plot_layout(heights = c(0.55, 1, 0.95)) +
+card <- p_tiles / (p_a | p_b) / (p_c | p_d) +
+  plot_layout(heights = c(0.5, 1, 1.05)) +
   plot_annotation(
     title = "DuckDB 2.0 quack server under concurrent TPC-H load",
-    subtitle = "Concurrency adds latency, not throughput. Server threads are what matter.",
+    subtitle = "Concurrency adds latency, not throughput. Server threads are what matter.\nA cap in front of the server helps the heavy queries, not the short ones.",
     caption = paste0("22 TPC-H queries at scale factor 100 · AMD Ryzen AI 9 HX 370, 12 cores / 24 threads · DuckDB v2.0.0\n",
-                     "medians of 3 repeats · 2,640 query executions, 0 failures, identical results · github.com/lab1702/test-duckdb-quack"),
+                     "medians of 3 repeats · 9,000 query executions, 0 failures, identical results · github.com/lab1702/test-duckdb-quack"),
     theme = theme(plot.background = element_rect(fill = surface, colour = NA),
                   plot.title = element_text(family = fam, face = "bold", colour = ink, size = 24, margin = margin(b = 4)),
                   plot.subtitle = element_text(family = fam, colour = ink2, size = 15, margin = margin(b = 6)),
