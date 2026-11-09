@@ -4,7 +4,10 @@ Sweep run on 2026-10-24 with `run_tpch.sh` at its defaults, summarised with
 `summarize_tpch.R`. The figure the script produced is `out/summary.png`
 (`out/` is not committed). Two follow-up sweeps the same evening, each varying
 one factor with the other held fixed, are in
-[Separating concurrency from server threads](#separating-concurrency-from-server-threads).
+[Separating concurrency from server threads](#separating-concurrency-from-server-threads),
+and a later test of admission control with short queries mixed into a heavy
+load (2026-11-08, `run_mixed.sh`) is in
+[Admission control](#admission-control-light-queries-mixed-into-a-heavy-load).
 
 ## Setup
 
@@ -246,6 +249,145 @@ Findings:
    an effective 2–4 threads; whatever limited parallelism elsewhere was not
    the server's execution pool on this workload.
 
+## Admission control: light queries mixed into a heavy load
+
+The conclusions below originally proposed "a queue in front of the server
+(admission control at ~2–8 queries)" so that short queries would stop waiting
+behind heavy ones. A reader asked whether that setup had been run with the
+80 ms queries mixed in, to see whether they drop back from ~1 s. It had not;
+`run_mixed.sh` was written to test it, and it was run on 2026-11-08 against the
+same server (DuckDB v2.0.0, SF100, 24 threads), summarised with
+`summarize_mixed.R`. The figure is `out_mixed/summary.png` (not committed).
+
+The sweep above is a closed batch: 22 queries, N at a time, light queries
+last. That measures how long a light query *executes* next to its
+neighbours, but not how long it waits for a slot, and at low N its
+neighbours were light too. This test is an open-loop mix instead:
+
+| | |
+| --- | --- |
+| Heavy load | 16 clients running Q18, Q09, Q13, Q21, Q10, Q05, Q03, Q04 back to back for the whole run (each starts its next query as soon as the previous one returns) |
+| Light queries | Q02, Q11, Q06 in turn (0.08–0.14 s alone), one arriving every 0.5 s for 90 s, whether or not the previous one has finished |
+| Gate | `none`: no cap. `shared/CAP`: at most CAP queries execute at once, light or heavy, one queue. `bypass/CAP`: at most CAP *heavy* queries execute at once, light queries skip the queue. `alone`: light queries only, as the reference |
+| Runs | 8 settings x 3 repeats, 90 s each plus the drain; 4,320 light and 1,303 heavy queries, 0 failures, identical results (Q11 tie order aside). `bypass/1` was run afterwards on its own, the same way |
+| Latency | queue wait + the client's `.timer` time (`query_s`), i.e. what a persistent client would see; medians over all 540 light queries per setting unless stated |
+
+The gate never exceeded its cap (checked from the admission and completion
+times of every query).
+
+### Light-query latency
+
+All three light queries pooled:
+
+| Setting | median | p90 | max | median wait | median exec | over 1 s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| alone | 0.12 | 0.16 | 0.59 | 0.00 | 0.11 | 0% |
+| none | 3.08 | 8.90 | 16.68 | 0.00 | 3.07 | 96% |
+| shared/8 | 21.80 | 24.36 | 43.76 | 20.22 | 1.22 | 100% |
+| shared/4 | 24.27 | 26.30 | 28.50 | 23.52 | 0.69 | 100% |
+| shared/2 | 27.21 | 28.84 | 29.85 | 26.89 | 0.21 | 100% |
+| bypass/8 | 2.21 | 6.43 | 10.90 | 0.00 | 2.21 | 91% |
+| bypass/4 | 1.41 | 3.09 | 7.71 | 0.00 | 1.41 | 73% |
+| bypass/2 | 0.80 | 1.56 | 4.14 | 0.00 | 0.80 | 37% |
+| bypass/1 (separate run) | 0.36 | 1.01 | 2.03 | 0.00 | 0.35 | 11% |
+
+Q02, the 80 ms query the question was about (180 samples per setting):
+
+| Setting | median | p90 | max | vs alone |
+| --- | ---: | ---: | ---: | ---: |
+| alone | 0.10 | 0.11 | 0.41 | 1x |
+| none | 2.01 | 3.07 | 5.56 | 21x |
+| shared/8 | 21.46 | 23.87 | 25.47 | 225x |
+| shared/4 | 24.23 | 26.24 | 27.80 | 255x |
+| shared/2 | 27.21 | 28.85 | 29.85 | 286x |
+| bypass/8 | 1.63 | 2.17 | 2.69 | 17x |
+| bypass/4 | 1.17 | 1.82 | 2.31 | 12x |
+| bypass/2 | 0.80 | 1.38 | 1.79 | 8x |
+| bypass/1 (separate run) | 0.35 | 0.96 | 1.37 | 3.5x |
+
+Q11 behaves like Q02 (1.03 s at bypass/2). Q06, a full scan of `lineitem`,
+suffers most without a gate (7.3 s median at `none`) and recovers furthest
+with one (0.68 s at bypass/2).
+
+### Heavy throughput
+
+Heavy queries completed per minute inside the 90 s window (a query still
+running when the window closed counts for the fraction of its run time that
+fell inside), with the average number of queries in flight:
+
+| Setting | heavy/min | in flight (heavy) | in flight (all) | median heavy exec |
+| --- | ---: | ---: | ---: | ---: |
+| none | 24.5 | 16.0 | 25.0 | 33.1 |
+| shared/8 | 35.4 | 5.2 | 8.0 | 7.4 |
+| shared/4 | 37.3 | 2.4 | 4.0 | 3.5 |
+| shared/2 | 36.0 | 1.3 | 2.0 | 1.6 |
+| bypass/8 | 29.9 | 8.0 | 14.7 | 11.0 |
+| bypass/4 | 34.4 | 4.0 | 8.0 | 6.2 |
+| bypass/2 | 35.2 | 2.0 | 4.4 | 2.9 |
+| bypass/1 (separate run) | 33.7 | 1.0 | 2.5 | 1.4 |
+
+The three repeats of every setting agreed to within 0.1 heavy queries per
+minute.
+
+### Findings
+
+1. **Without a gate, the light queries are far worse than the sweep's ~1 s.**
+   Sixteen heavy queries running at once (25 in flight with the light ones)
+   put the median light query at 3.1 s, the 90th percentile at 8.9 s and the
+   worst at 16.7 s. The sweep's ~1 s came from runs where most of the 16+ in
+   flight were themselves light; here all 16 neighbours are heavy. This
+   setting also has the worst heavy throughput (24.5/min against 35–37 with
+   a cap): the oversubscription the sweep saw above 16 in flight.
+2. **A shared queue is the wrong admission control for short queries.** With
+   one queue and a cap, the light queries execute fast once admitted (0.21 s
+   at cap 2) but first wait 20–27 s for a slot, because the 16 heavy clients
+   keep the queue 8–14 deep and a newcomer waits behind all of them. This is
+   not an implementation detail: any first-come queue does this whenever heavy
+   demand exceeds the cap. A cap alone makes short queries slower, not faster.
+3. **Letting short queries bypass the gate removes the wait but not the
+   contention.** With the cap on heavy queries only, the light queries start
+   at once and their latency is purely execution next to CAP heavy queries:
+   Q02 at 1.63, 1.17 and 0.80 s for a cap of 8, 4 and 2, i.e. 17x, 12x and 8x
+   its time alone, with 91%, 73% and 37% of all light queries still over 1 s.
+   A further run of `bypass/1`, one heavy query at a time (`out_mixed_b1/`,
+   3 repeats, 540 light and 197 heavy queries, no failures), gets Q02 to
+   0.35 s median, 3.5x its time alone, with a 90th percentile of 0.96 s and
+   11% of all light queries still over 1 s.
+   DuckDB gives every running query the whole 24-thread pool and does not
+   prioritise between queries, so a short query's few pipeline tasks queue
+   behind the heavy queries' many, however few heavy queries there are.
+4. **So, to the question: no, they do not drop back.** Admission control
+   with priority for short queries takes an 80–140 ms query from 2–7 s to
+   roughly 0.7–1.0 s under this load with two heavy queries running, which
+   is where the sweep's ~1 s was, and to 0.35 s with a single heavy query
+   running; it does not bring it back to its uncontended 0.1 s. The only setting
+   that did was `alone`. Getting short queries back to ~0.1 s would need
+   either idle capacity (a heavy load that is not continuous) or isolation
+   the server does not offer, such as a separate server process, or separate
+   machine, for short queries; neither was tested here.
+5. **The sweep's low-N latency numbers were optimistic for light queries.**
+   The sweep reported Q02 at 0.14 s with 2 in flight and 0.24 s with 4,
+   because in a longest-first batch the queries still running when Q02 starts
+   are light. Next to two heavy queries Q02 takes 0.80 s, next to four 1.17 s.
+   The write-up's "2–8 in flight" recommendation therefore says nothing about
+   short-query latency unless the heavy queries are also limited to about 2.
+6. **A cap costs the heavy queries nothing; it helps them.** Heavy throughput
+   is 35–37 per minute at every cap from 2 to 8 with a shared queue, 44–52%
+   more than with no gate, and the same flat plateau the sweep found between
+   2 and 8 in flight. Letting the light queries bypass the cap costs 2%
+   (cap 2) to 16% (cap 8) of heavy throughput, the CPU the light queries
+   take.
+
+Caveats specific to this test: the heavy demand is unbounded (16 clients
+that never pause), which is the worst case for a shared queue; with heavy
+queries arriving slower than the cap drains them, the queue would often be
+empty and a shared gate would behave like `bypass`. The gate is a counting
+semaphore, so waiters are admitted in roughly, not strictly, arrival order.
+Light queries that take longer than 0.5 s overlap the next arrival, so under
+load they also contend with each other (1.6 light queries in flight on
+average at bypass/2, 0.4 at `alone`). All clients ran on the server's
+machine.
+
 ## Conclusions
 
 - The server is correct under concurrency: no failures and identical results
@@ -263,10 +405,13 @@ Findings:
 - Do not reduce server threads to make room for clients: the configurations
   with 1–4 server threads are 1.5–3x slower in total and have the worst tail
   latencies, whether 4 or 22 queries are in flight.
-- A queue in front of the server (admission control at ~2–8 queries) would
-  deliver the same throughput as unbounded concurrency with far better
-  latency, especially for short queries, which otherwise wait behind heavy
-  ones for workers.
+- A queue in front of the server helps the heavy queries (a cap of 2–8
+  delivers 44–52% more heavy throughput than 16 at once) but does not, by
+  itself, help short queries: with one queue they wait behind the heavy
+  backlog (20–27 s here), and even when they are let past the gate they run
+  8–17x slower than alone next to 2–8 heavy queries, 3.5x next to one (see
+  [Admission control](#admission-control-light-queries-mixed-into-a-heavy-load)).
+  Short-query latency needs idle capacity or isolation, not just a cap.
 
 ## Caveats
 

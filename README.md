@@ -11,6 +11,8 @@ returned the same rows, and plots the results.
 | `start_server.sh` | Starts a read-only quack server on a TPC-H database file. |
 | `run_tpch.sh` | Runs the sweep and writes timings and a result check as CSV. |
 | `summarize_tpch.R` | Prints summary tables and writes `summary.png` / `summary.pdf`. |
+| `run_mixed.sh` | Admission-control test: light queries arriving into a heavy load, with a gate capping how many queries execute at once. |
+| `summarize_mixed.R` | Summary tables and `summary.png` / `summary.pdf` for a `run_mixed.sh` run. |
 | `social_card.R` | Renders `social_card.png`, a 1200 x 1200 summary card of the findings in `RESULTS.md` (numbers typed in, not read from a sweep). |
 
 ## Requirements
@@ -70,6 +72,14 @@ returned the same rows, and plots the results.
    Rscript summarize_tpch.R
    ```
 
+4. To test admission control, run the mixed workload (see
+   [Admission control](#admission-control)) and summarise it:
+
+   ```bash
+   ./run_mixed.sh
+   Rscript summarize_mixed.R
+   ```
+
 ## Settings
 
 `run_tpch.sh` takes no arguments; everything comes from the environment.
@@ -89,6 +99,52 @@ returned the same rows, and plots the results.
 
 Each of `CPUS`, `MAX_JOBS`, `MAX_THREADS`, `MARGIN` and `REPEATS` is capped at
 9999. The headers of the scripts describe the behaviour in full.
+
+## Admission control
+
+`run_mixed.sh` answers a different question from the sweep: what a short
+query's latency looks like when it arrives, unannounced, into a server that
+is already busy, with and without a cap on how many queries may execute at
+once. Several heavy clients (default 16) run the slowest TPC-H queries back
+to back for the whole run, a light query (Q02, Q11 or Q06 in turn) arrives
+every 0.5 s whether or not the previous one has finished, and every query
+passes through a gate first:
+
+| Setting | Meaning |
+| --- | --- |
+| `alone` | No heavy load; the light queries by themselves, as the reference. |
+| `none` | No gate; everything runs at once. |
+| `shared/CAP` | At most CAP queries execute at once, light or heavy. A light query waits for a slot like any other (one queue). |
+| `bypass/CAP` | At most CAP heavy queries execute at once; light queries skip the gate and start immediately. |
+
+The gate is a counting semaphore (CAP tokens in a pipe), so waiters are
+admitted in roughly, not strictly, arrival order. Each query's queue wait and
+execution time are recorded separately; the latency a user would see is their
+sum. The default run covers `alone none shared/8 shared/4 shared/2 bypass/8
+bypass/4 bypass/2`, 90 s each, three repeats, after a 20 s warm-up. The
+server's threads setting is left as it is.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CONFIGS` | the eight settings above | Space-separated gate settings, in the order to run them. |
+| `REPEATS` | `3` | Passes over `CONFIGS` (even passes run in reverse order). |
+| `DURATION` | `90` | Seconds that light queries keep arriving. Heavy queries still running then are left to finish. |
+| `LIGHT_INTERVAL` | `0.5` | Seconds between light arrivals (up to 3 decimals). |
+| `LIGHT_QUERIES` | `2 11 6` | Light queries, used in turn. |
+| `HEAVY_QUERIES` | `18 9 13 21 10 5 3 4` | Heavy queries; client w starts at the w-th and cycles. |
+| `HEAVY_CLIENTS` | `16` | Heavy clients running back to back. |
+| `OUT_DIR` | `out_mixed` | Output folder; should be a folder of its own. |
+| `WARMUP` | `1` | `0` skips the unrecorded 20 s warm-up. |
+| `QUERY_TIMEOUT` | `0` (none) | Seconds after which a query is killed and counted as failed. |
+
+Output goes under `OUT_DIR`: `queries.csv` has one row per query with its
+kind (light or heavy), arrival, admission, queue wait, client wall time and
+`query_s`; `runs.csv` one row per setting and repeat; `system.csv` and
+`check.csv` as for the sweep; and each query's result under
+`SETTING/rN/`. `summarize_mixed.R` prints light-query latency (median, p90,
+max, share over 0.5 s and 1 s) per setting and per light query, heavy
+throughput and average queries in flight per setting, and writes
+`summary.png` / `summary.pdf`.
 
 ## Output
 
