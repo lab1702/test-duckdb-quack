@@ -8,6 +8,8 @@ one factor with the other held fixed, are in
 and a later test of admission control with short queries mixed into a heavy
 load (2026-11-08, `run_mixed.sh`) is in
 [Admission control](#admission-control-light-queries-mixed-into-a-heavy-load).
+All of those ran on Linux; the main sweep was repeated on Windows on
+2026-11-25, in [The same sweep on Windows](#the-same-sweep-on-windows).
 
 ## Setup
 
@@ -388,6 +390,120 @@ load they also contend with each other (1.6 light queries in flight on
 average at bypass/2, 0.4 at `alone`). All clients ran on the server's
 machine.
 
+## The same sweep on Windows
+
+The main sweep was repeated on 2026-11-25 on Windows, again with
+`run_tpch.sh` at its defaults and summarised with `summarize_tpch.R`, to see
+whether the picture depends on the operating system. The figure is that run's
+`out/summary.png` (not committed).
+
+| | |
+| --- | --- |
+| Machine | AMD Ryzen AI 9 HX 370, 12 cores / 24 logical CPUs (the same CPU model as the Linux sweeps), 87.6 GiB RAM as Windows reports it |
+| System | Windows 11 Pro, native `duckdb.exe`; the scripts run under Git Bash (Git for Windows, bash 5.3) |
+| DuckDB | v2.0.1 (the Linux sweeps used v2.0.0), `-serve` (quack) server, `-readonly` |
+| Database | TPC-H scale factor 100 |
+| Workload | as in the main sweep: the same 24 configurations, 3 recorded passes after one warm-up pass; 72 runs, 1,584 query executions |
+
+Every one of the 1,584 query executions succeeded (exit 0, nothing on
+stderr), and the result check found identical rows across every run, again
+with Q11's tie order as the only difference.
+
+### Throughput
+
+Fastest to slowest, median of 3 repeats, with the Linux medians from
+[Throughput](#throughput-total-time-for-all-22-queries) alongside.
+
+| Config (N x T) | time_s | min–max | vs best | wall_s | avg in flight | Linux time_s | Linux wall_s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3 x 22 | 13.54 | 13.40–13.82 | 1.00x | 18.74 | 2.7 | 14.12 | 15.81 |
+| 2 x 23 | 14.53 | 14.42–14.75 | 1.07x | 20.04 | 1.8 | 13.65 | 15.71 |
+| 4 x 21 | 14.68 | 14.47–14.69 | 1.08x | 18.84 | 3.6 | 14.41 | 15.64 |
+| 5 x 20 | 15.65 | 15.29–15.83 | 1.16x | 18.86 | 4.6 | 14.78 | 15.63 |
+| 6 x 19 | 15.96 | 15.93–17.03 | 1.18x | 18.79 | 5.6 | 15.04 | 15.80 |
+| 8 x 17 | 17.49 | 17.34–18.58 | 1.29x | 18.91 | 7.5 | 15.62 | 16.07 |
+| 1 x 24 | 17.74 | 17.64–17.87 | 1.31x | 24.07 | 0.9 | 15.68 | 17.64 |
+| 9 x 16 | 17.88 | 17.76–18.64 | 1.32x | 18.87 | 8.5 | 16.39 | 16.70 |
+| 7 x 18 | 17.93 | 16.78–18.04 | 1.32x | 18.86 | 6.5 | 15.14 | 15.89 |
+| 12 x 13 | 18.39 | 18.11–18.84 | 1.36x | 19.22 | 11.1 | 17.59 | 17.89 |
+| 11 x 14 | 18.41 | 18.07–19.09 | 1.36x | 19.24 | 9.8 | 18.79 | 19.11 |
+| 10 x 15 | 18.43 | 18.31–18.52 | 1.36x | 19.30 | 9.4 | 16.00 | 16.35 |
+| 13 x 12 | 18.64 | 18.34–19.21 | 1.38x | 19.56 | 11.8 | 17.09 | 17.44 |
+| 14 x 11 | 18.84 | 18.50–19.03 | 1.39x | 19.75 | 12.6 | 17.01 | 17.45 |
+| 15 x 10 | 19.23 | 18.66–19.57 | 1.42x | 20.16 | 13.4 | 16.70 | 17.04 |
+| 17 x 8 | 19.88 | 18.99–20.15 | 1.47x | 20.62 | 13.9 | 17.86 | 18.27 |
+| 18 x 7 | 19.96 | 19.62–20.61 | 1.47x | 20.78 | 13.8 | 17.91 | 18.32 |
+| 16 x 9 | 20.12 | 18.89–20.79 | 1.49x | 20.92 | 12.7 | 17.58 | 17.99 |
+| 19 x 6 | 20.23 | 20.13–20.38 | 1.49x | 20.87 | 14.4 | 18.25 | 18.58 |
+| 20 x 5 | 21.00 | 20.15–21.42 | 1.55x | 21.69 | 14.2 | 18.24 | 18.77 |
+| 21 x 4 | 21.02 | 20.89–21.72 | 1.55x | 21.96 | 14.0 | 20.21 | 20.71 |
+| 22 x 3 | 22.59 | 21.66–23.39 | 1.67x | 23.59 | 13.0 | 21.30 | 21.67 |
+| 22 x 2 | 31.37 | 30.91–31.70 | 2.32x | 32.11 | 9.9 | 28.07 | 28.63 |
+| 22 x 1 | 32.74 | 32.68–32.76 | 2.42x | 33.54 | 9.5 | 26.96 | 27.30 |
+
+Findings:
+
+1. **The picture is the same.** The best configurations are again the ones
+   with 2–4 queries in flight (3 x 22 at 13.5 s, with 2 x 23 and 4 x 21 within
+   8%), and starving the server of threads is again what hurts: 22 x 1 and
+   22 x 2 take 2.3–2.4x the best. The best configuration matches the Linux
+   one (13.5 s against 13.7 s), while one query at a time (1 x 24) is 13%
+   slower than on Linux (17.7 s against 15.7 s), so concurrency gains 24%
+   here against 13% there.
+2. **Server-side time is about 11% higher than on Linux.** `time_s` is higher
+   in 22 of the 24 configurations, by 2–21% (median over all 24: 11%); 3 x 22
+   and 11 x 14 came out 4% and 2% lower. The gap is smallest at 2–6 in flight
+   (-4% to +6%) and mostly 9–15% from 7 in flight up, with 22 x 1 the largest
+   at 21%.
+3. **End to end, Windows is about 3 s slower, and most of that is the
+   clients.** Measured wall time is 18.7–19.3 s for every configuration from
+   3 to 12 in flight (Linux: 15.6–16.1 s from 2 to 8), and 24.1 s for 1 x 24
+   against 17.6 s. A client spends a median of 0.20 s outside its query
+   (starting, connecting and exiting) with one in flight, 0.5 s with 4–8 and
+   1.0 s with 22, against roughly 0.1 s on Linux; that is 20% of client time
+   at 1 x 24 and 2 x 23 and 8% at 8 x 17 (Linux: 12% at 2 x 23, 4% at
+   8 x 17). The harness adds to it: between one client exiting and the next
+   starting, the script runs `awk`, `sed` and `rm` on the result, which under
+   Git Bash takes 0.08 s per query at 1 x 24 (hence 0.9 in flight there, not
+   1.0). So `wall_s` overstates what a persistent client would see by more
+   than it does on Linux, and `time_s` is the fairer comparison between the
+   two systems.
+4. **No run stalled.** The three repeats of every configuration agreed within
+   about 10% (the widest was 16 x 9, 18.9–20.8 s), where the Linux sweep had
+   four runs stalled at 23–61 s. One sweep on each system is too few to say
+   whether that is the system or the evening.
+
+### Latency
+
+Median and slowest per-query latency within a run (median over repeats),
+with the Linux figures from [Latency](#latency) alongside:
+
+| Config (N x T) | median query (s) | slowest query (s) | Linux median (s) | Linux slowest (s) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 x 24 | 0.55 | 2.3 (Q18) | 0.45 | 2.4 (Q09) |
+| 2 x 23 | 0.81 | 4.5 (Q09) | 0.76 | 4.4 (Q09) |
+| 4 x 21 | 1.74 | 8.9 (Q21) | 1.73 | 7.2 (Q18) |
+| 8 x 17 | 3.92 | 17.5 (Q21) | 4.24 | 13.1 (Q21) |
+| 12 x 13 | 8.75 | 18.4 (Q21) | 8.25 | 17.1 (Q21) |
+| 16 x 9 | 13.46 | 20.1 (Q09) | 9.46 | 17.5 (Q21) |
+| 22 x 3 | 13.77 | 22.4 (Q09) | 11.59 | 20.5 (Q18) |
+| 22 x 1 | 12.01 | 32.7 (Q18) | 10.47 | 27.0 (Q18) |
+
+Findings:
+
+1. **Latency scales with the number of queries in flight, as on Linux.** The
+   median query takes 0.55 s alone, 0.81 s with one neighbour, ~4 s with
+   seven and 12–15 s with 16 or more. Up to 12 in flight the medians in the
+   table are within 0.5 s of the Linux ones; at 16 or more they are 1.5–4 s
+   higher.
+2. **The same queries are heavy and light.** Alone, Q18, Q09 and Q13 take
+   2.2–2.3 s and Q21 1.3 s (Linux: 2.2, 2.4, 1.8 and 1.2 s). Q02 goes from
+   0.10 s alone to 0.9–1.3 s at 16 or more in flight, and Q06 from 0.20 s to
+   3.5–5.0 s (Linux: 0.08 s to ~1 s, and 0.14 s to 3–4 s).
+
+The Windows run differs from the Linux ones in more than the operating
+system: see [Caveats](#caveats).
+
 ## Conclusions
 
 - The server is correct under concurrency: no failures and identical results
@@ -412,6 +528,11 @@ machine.
   8–17x slower than alone next to 2–8 heavy queries, 3.5x next to one (see
   [Admission control](#admission-control-light-queries-mixed-into-a-heavy-load)).
   Short-query latency needs idle capacity or isolation, not just a cap.
+- The sweep's findings carry over to Windows (see
+  [The same sweep on Windows](#the-same-sweep-on-windows)): the same ranking
+  of configurations, no failures and identical results, server-side time
+  about 11% higher than on Linux, and end-to-end time about 3 s higher at
+  3–8 in flight because each client costs more to start there.
 
 ## Caveats
 
@@ -424,3 +545,7 @@ machine.
   competed with the server's. The `client_pct` column in the R output
   quantifies client startup, which matters most at low concurrency.
 - Only one scale factor and one query order (longest first) were tested.
+- The Windows sweep differs from the Linux ones in more than the operating
+  system: DuckDB v2.0.1 instead of v2.0.0, a harness (Git Bash) in which
+  starting a process costs more, and a run a month later. It shows that the
+  findings hold on Windows, not how much of the gap is Windows itself.
