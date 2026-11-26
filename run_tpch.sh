@@ -93,8 +93,25 @@ export LC_ALL=C
 
 (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )) ||
     { echo "bash 5.1 or newer is required (for wait -n -p; EPOCHREALTIME needs 5.0)" >&2; exit 1; }
-command -v setsid > /dev/null || { echo "setsid (util-linux) is required" >&2; exit 1; }
-command -v pgrep > /dev/null || { echo "pgrep (procps) is required" >&2; exit 1; }
+# Windows (Git Bash, MSYS2 or Cygwin, running the native duckdb.exe) has no
+# setsid or pgrep. The native client isn't a POSIX process: it has no session
+# or process group to be put in, and killing its pid (the Cygwin stub it was
+# exec'd from) ends it. So there the clients start without setsid (SETSID is
+# empty) and `pgrep -P` is done with ps. A Ctrl-C on the console may then
+# reach the clients, which only matters to a sweep that is being stopped
+# anyway. duckdb.exe also ends lines with CR LF outside CSV mode (see duck),
+# and there is no lscpu (see write_system_info).
+case "$OSTYPE" in msys* | cygwin*) WINDOWS=1 ;; *) WINDOWS=0 ;; esac
+if (( WINDOWS )); then
+    SETSID=()
+    # Only `pgrep -P PID` is used (stop_jobs). Cygwin's ps -ef prints
+    # UID PID PPID TTY STIME COMMAND.
+    pgrep() { ps -ef | awk -v ppid="$2" '$3 == ppid {print $2}'; }
+else
+    command -v setsid > /dev/null || { echo "setsid (util-linux) is required" >&2; exit 1; }
+    command -v pgrep > /dev/null || { echo "pgrep (procps) is required" >&2; exit 1; }
+    SETSID=(setsid -w)
+fi
 command -v timeout > /dev/null || { echo "timeout (coreutils) is required" >&2; exit 1; }
 
 usage() {
@@ -143,7 +160,17 @@ read -r -d '' -a QUERIES <<< "$QUERY_ORDER"
 # KILL, since the client is in the script's process group and may be stuck in
 # a socket read; the exit status is then 137 with GNU timeout and 124 with
 # uutils coreutils (only non-zero matters here).
-duck() { timeout -s KILL 60 duckdb -no-agent -no-init -connect "$@"; }
+if (( WINDOWS )); then
+    # duckdb.exe ends lines with CR LF outside CSV mode (-list here), and
+    # $(...) only strips the LF, so drop the CRs. The status is the client's,
+    # not tr's.
+    duck() {
+        timeout -s KILL 60 duckdb -no-agent -no-init -connect "$@" | tr -d '\r'
+        return "${PIPESTATUS[0]}"
+    }
+else
+    duck() { timeout -s KILL 60 duckdb -no-agent -no-init -connect "$@"; }
+fi
 
 set_threads() {
     duck -c "SET threads = $1" > /dev/null || {
@@ -271,7 +298,7 @@ cleanup() {
     [ -z "$WARMUP_DIR" ] || rm -rf -- "$WARMUP_DIR"
     if [ -n "$original_threads" ]; then
         # 3>&-: see run_query.
-        if setsid -w timeout -s KILL 30 duckdb -no-agent -no-init -connect -c "SET threads = $original_threads" > /dev/null 3>&-; then
+        if "${SETSID[@]}" timeout -s KILL 30 duckdb -no-agent -no-init -connect -c "SET threads = $original_threads" > /dev/null 3>&-; then
             echo "Restored threads = $original_threads" >&3 2> /dev/null
         else
             echo "Warning: failed to restore threads = $original_threads on the server" >&2
@@ -317,7 +344,7 @@ run_query() {
     # closed, so a client that outlives the script can't hold the script's
     # stdout pipe open. setsid doesn't fork here (this subshell isn't a process
     # group leader); -w keeps the exit status right if it ever did.
-    ( trap - TERM HUP; exec setsid -w "${limit[@]}" duckdb -no-agent -no-init -connect -csv -cmd ".timer on" -c "$sql" 3>&- ) > "$f" 2> "$err"
+    ( trap - TERM HUP; exec "${SETSID[@]}" "${limit[@]}" duckdb -no-agent -no-init -connect -csv -cmd ".timer on" -c "$sql" 3>&- ) > "$f" 2> "$err"
     rc=$?
     e=${EPOCHREALTIME/[.,]/}
     # Move .timer's "Run Time (s): real X user Y sys Z" line out of the
@@ -439,18 +466,32 @@ warm_up() {
 # started locally with ./start_server.sh. Unknown values are left empty.
 write_system_info() {
     local cpu sockets cores_per_socket cores='' mem version lscpu_out
-    # lscpu from util-linux 2.37-2.39 (Ubuntu 22.04, Debian 12) indents these
-    # fields under their parents, hence the leading blanks in the patterns.
-    lscpu_out=$(lscpu 2> /dev/null)
-    # Heterogeneous (big.LITTLE) ARM machines print one Model name per core
-    # type; keep them all, joined with " + ".
-    cpu=$(sed -n 's/^[[:space:]]*Model name:[[:space:]]*//p' <<< "$lscpu_out" | awk '!seen[$0]++' | paste -sd '\t' -)
-    cpu=${cpu//$'\t'/ + }
-    sockets=$(sed -n 's/^[[:space:]]*Socket(s):[[:space:]]*//p' <<< "$lscpu_out" | head -1)
-    cores_per_socket=$(sed -n 's/^[[:space:]]*Core(s) per socket:[[:space:]]*//p' <<< "$lscpu_out" | head -1)
-    # lscpu prints "Socket(s): -" on some ARM systems.
-    [[ "$sockets" =~ ^[1-9][0-9]*$ && "$cores_per_socket" =~ ^[1-9][0-9]*$ ]] &&
-        cores=$(( sockets * cores_per_socket ))
+    if (( WINDOWS )); then
+        # No lscpu: the model name comes from Cygwin's /proc/cpuinfo (padded
+        # with blanks, which awk's $1 = $1 squeezes) and the core count from
+        # Windows, since cpuinfo's "cpu cores" counts logical CPUs there.
+        cpu=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2> /dev/null |
+            awk '{$1 = $1} !seen[$0]++' | paste -sd '\t' -)
+        cpu=${cpu//$'\t'/ + }
+        cores=$(powershell.exe -NoProfile -Command \
+            '(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum' \
+            < /dev/null 2> /dev/null | tr -d '\r')
+        [[ "$cores" =~ ^[1-9][0-9]*$ ]] || cores=''
+    else
+        # lscpu from util-linux 2.37-2.39 (Ubuntu 22.04, Debian 12) indents
+        # these fields under their parents, hence the leading blanks in the
+        # patterns.
+        lscpu_out=$(lscpu 2> /dev/null)
+        # Heterogeneous (big.LITTLE) ARM machines print one Model name per core
+        # type; keep them all, joined with " + ".
+        cpu=$(sed -n 's/^[[:space:]]*Model name:[[:space:]]*//p' <<< "$lscpu_out" | awk '!seen[$0]++' | paste -sd '\t' -)
+        cpu=${cpu//$'\t'/ + }
+        sockets=$(sed -n 's/^[[:space:]]*Socket(s):[[:space:]]*//p' <<< "$lscpu_out" | head -1)
+        cores_per_socket=$(sed -n 's/^[[:space:]]*Core(s) per socket:[[:space:]]*//p' <<< "$lscpu_out" | head -1)
+        # lscpu prints "Socket(s): -" on some ARM systems.
+        [[ "$sockets" =~ ^[1-9][0-9]*$ && "$cores_per_socket" =~ ^[1-9][0-9]*$ ]] &&
+            cores=$(( sockets * cores_per_socket ))
+    fi
     mem=$(awk '/^MemTotal:/ {printf "%.1f", $2 / 1048576}' /proc/meminfo 2> /dev/null)
     version=$(duck -list -noheader -c "SELECT version()" 2> /dev/null)
     {

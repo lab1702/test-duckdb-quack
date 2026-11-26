@@ -38,7 +38,15 @@ fi
 # give it a stdin that never ends: a FIFO opened read-write (so it never sees
 # EOF; Linux semantics), removed straight away. The FIFO goes in a private
 # folder from mktemp -d, so no other user can create or swap it.
-if [ ! -t 0 ]; then
+# On Windows (Git Bash, MSYS2 or Cygwin) the native duckdb.exe can't read a
+# Cygwin FIFO (it sees end of input at once), but it can read a pipe. So there
+# stdin is a pipe whose writer never writes, and goes away within a couple of
+# seconds of the server ($$ is this script's pid, which the exec at the end
+# hands to duckdb).
+case "$OSTYPE" in msys* | cygwin*) WINDOWS=1 ;; *) WINDOWS=0 ;; esac
+if [ ! -t 0 ] && (( WINDOWS )); then
+    exec 0< <(while kill -0 $$ 2> /dev/null; do sleep 2; done)
+elif [ ! -t 0 ]; then
     fifo_dir=$(mktemp -d "${TMPDIR:-/tmp}/start_server.XXXXXX")
     trap 'rm -rf -- "$fifo_dir"' EXIT
     mkfifo -m 600 "$fifo_dir/fifo"

@@ -23,6 +23,9 @@ returned the same rows, and plots the results.
   the same machine as the same user.
 - bash 5.1 or newer, plus `setsid`, `pgrep`, `timeout`, `lscpu`, `md5sum`,
   `awk` and `sed -i` (Linux; util-linux, procps and coreutils or uutils).
+- On Windows, `start_server.sh` and `run_tpch.sh` also run under Git Bash
+  (Git for Windows) with the native `duckdb.exe` on the `PATH`; `setsid`,
+  `pgrep` and `lscpu` are not needed there. `run_mixed.sh` is Linux-only.
 - For the plots: R 4.1 or newer with the `dplyr`, `tidyr`, `ggplot2` and
   `patchwork` packages. `social_card.R` also needs `ragg` and `systemfonts`,
   and uses the Inter font when it is installed.
